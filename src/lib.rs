@@ -18,7 +18,7 @@
 //! it is an `HMAC-MD5` over an MD4 of the password, one mechanism at one
 //! gate that belongs to the identity capability (ADR-0044, ADR-0050),
 //! which will lift `ntlm.rs`. Until it does the logon is taken as a guest,
-//! the way TLS is the transport capability's (ADR-0033); message signing
+//! the way TLS is `xmip-core-tls`'s (ADR-0033); message signing
 //! is left off, so a server that requires it refuses, and this transport
 //! says so.
 //!
