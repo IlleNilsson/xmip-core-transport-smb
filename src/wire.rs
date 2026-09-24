@@ -269,24 +269,6 @@ pub fn wide_region(body: &[u8], offset: u16, length: u32) -> Result<&[u8]> {
         .ok_or_else(|| protocol_error("a region past the end of the message"))
 }
 
-/// A UTF-16LE string as bytes.
-#[must_use]
-pub fn utf16(text: &str) -> Vec<u8> {
-    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
-}
-
-/// A UTF-16LE byte string back to text; a trailing odd byte is dropped.
-#[must_use]
-pub fn from_utf16(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| u16::from_le_bytes(*pair))
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,10 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn regions_utf16_and_a_bad_signature_are_handled() {
-        assert_eq!(utf16("A"), [0x41, 0x00]);
-        assert_eq!(from_utf16(&utf16("orders.edi")), "orders.edi");
-        assert_eq!(from_utf16(&[0x41]), "");
+    fn regions_and_a_bad_signature_are_handled() {
         let body = b"..data..".to_vec();
         assert_eq!(
             region(&body, u16::try_from(HEADER).unwrap_or(0) + 2, 4).expect("region"),

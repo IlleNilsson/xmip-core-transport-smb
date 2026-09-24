@@ -17,6 +17,10 @@ path = "src/lib.rs"
 # A Technology depends on its parent Capability, never the reverse
 # (repository-model.md).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# The NTLM message layout the session setup carries (MS-NLMP).
+ntlm = { package = "xmip-core-library-ntlm", git = "https://github.com/IlleNilsson/xmip-core-library-ntlm", branch = "main" }
+# The estate's encoding primitives: UTF-16, which SMB2 writes names in.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test
