@@ -6,8 +6,9 @@
 //! SMB is the file share every Windows network already has, and a folder
 //! on one is a drop box a partner writes into and an integrator reads out
 //! of. What is spoken here is SMB2, dialect 2.0.2, over TCP on port 445
-//! (`wire.rs`): `NEGOTIATE`, `SESSION_SETUP` with the `NTLMSSP` tokens
-//! (`ntlm.rs`), `TREE_CONNECT` to one share, then `CREATE`, `WRITE`, `READ`,
+//! (`wire.rs`): `NEGOTIATE`, `SESSION_SETUP` with the three `NTLMSSP`
+//! messages as `xmip-core-library-ntlm` lays them out, `TREE_CONNECT` to one
+//! share, then `CREATE`, `WRITE`, `READ`,
 //! `CLOSE` and `QUERY_DIRECTORY` over one file (`message.rs`). A Receive
 //! Location lists the share and reads each file, removing it once it is
 //! safely a Stream; a Send Location creates and writes. Either may instead
@@ -16,8 +17,8 @@
 //!
 //! The `NTLMv2` response a real `SESSION_SETUP` carries is not computed here:
 //! it is an `HMAC-MD5` over an MD4 of the password, one mechanism at one
-//! gate that belongs to the identity capability (ADR-0044, ADR-0050),
-//! which will lift `ntlm.rs`. Until it does the logon is taken as a guest,
+//! gate that belongs to the identity capability (ADR-0044, ADR-0050).
+//! Until a node presents one the logon is taken as a guest,
 //! the way TLS is `xmip-core-library-tls`'s (ADR-0033); message signing
 //! is left off, so a server that requires it refuses, and this transport
 //! says so.
@@ -35,15 +36,13 @@
 pub mod client;
 pub mod directory;
 pub mod message;
-pub mod ntlm;
 pub mod session;
 pub mod wire;
 
 use std::net::TcpListener;
 use std::time::Duration;
 
-pub use client::Client;
-pub use ntlm::Identity;
+pub use client::{Client, Identity};
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
@@ -217,7 +216,7 @@ impl SmbTransport {
 }
 
 impl Accepting for SmbTransport {
-    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
         let mut session = self.accept_one(listener)?;
         let arrived = session
             .next_store()?
@@ -231,8 +230,7 @@ impl Accepting for SmbTransport {
 
 impl Loopback for SmbTransport {
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (listener, address) = self.bind()?;
-        Ok(Box::new(Listening::new(self.clone(), listener, address)))
+        Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {

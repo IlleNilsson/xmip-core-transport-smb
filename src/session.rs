@@ -19,9 +19,11 @@ use transport::Arrived;
 use transport::error::{Result, protocol_error};
 use transport::socket;
 
+use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
+use ntlm::{Authenticate, Challenge, Negotiate};
+
 use crate::directory;
 use crate::message::{self, FileId};
-use crate::ntlm;
 use crate::wire::{self, Message};
 
 /// The share this session serves.
@@ -102,18 +104,21 @@ impl Session {
 
     fn session_setup(&mut self) -> Result<()> {
         let negotiate = self.expect(wire::SESSION_SETUP)?;
-        ntlm::message_type(message::session_token(&negotiate.body)?)?;
+        let asked = Negotiate::parse(message::session_token(&negotiate.body)?)
+            .map_err(|error| protocol_error(error.message))?;
         let nonce = fresh_nonce(&self.peer);
+        let offered = Challenge::new(asked.flags & (NEGOTIATE_UNICODE | NEGOTIATE_NTLM), nonce);
         let mut challenge = negotiate.respond(
             wire::STATUS_MORE_PROCESSING,
-            message::session_setup(true, &ntlm::challenge(&nonce)),
+            message::session_setup(true, &offered.to_bytes()),
         );
         challenge.session_id = self.id;
         challenge.write(&mut self.writer)?;
         let authenticate = self.expect(wire::SESSION_SETUP)?;
         // The NTLMv2 response the identity capability would check is not
         // computed here; the identity is taken and the logon is a guest.
-        ntlm::read_authenticate(message::session_token(&authenticate.body)?)?;
+        Authenticate::parse(message::session_token(&authenticate.body)?)
+            .map_err(|error| protocol_error(error.message))?;
         let answer = authenticate.respond(wire::STATUS_SUCCESS, message::session_setup(true, &[]));
         answer.write(&mut self.writer)
     }

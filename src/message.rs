@@ -9,8 +9,7 @@
 use transport::error::{Result, protocol_error};
 
 use crate::wire::{
-    HEADER, from_utf16, get_u16, get_u32, get_u64, push_u16, push_u32, push_u64, region, utf16,
-    wide_region,
+    HEADER, get_u16, get_u32, get_u64, push_u16, push_u32, push_u64, region, wide_region,
 };
 
 /// `FILE_OPEN`: open an existing file.
@@ -109,7 +108,7 @@ pub fn session_token(body: &[u8]) -> Result<&[u8]> {
 /// A `TREE_CONNECT` request for `path` — `\\server\share`.
 #[must_use]
 pub fn tree_connect_request(path: &str) -> Vec<u8> {
-    let name = utf16(path);
+    let name = codec::utf16::encode(path);
     let mut out = Vec::new();
     push_u16(&mut out, 9);
     push_u16(&mut out, 0);
@@ -124,7 +123,7 @@ pub fn tree_connect_request(path: &str) -> Vec<u8> {
 /// # Errors
 /// Where the path runs past the message.
 pub fn tree_connect_path(body: &[u8]) -> Result<String> {
-    Ok(from_utf16(region(
+    Ok(codec::utf16::decode_lossy(region(
         body,
         get_u16(body, 4),
         get_u16(body, 6),
@@ -146,7 +145,7 @@ pub fn tree_connect_response() -> Vec<u8> {
 /// A `CREATE` request for `name` with `disposition` and `options`.
 #[must_use]
 pub fn create_request(name: &str, disposition: u32, options: u32) -> Vec<u8> {
-    let encoded = utf16(name);
+    let encoded = codec::utf16::encode(name);
     let mut out = Vec::new();
     push_u16(&mut out, 57);
     out.push(0);
@@ -175,7 +174,7 @@ pub fn create_request(name: &str, disposition: u32, options: u32) -> Vec<u8> {
 pub fn create_fields(body: &[u8]) -> Result<(String, u32, u32)> {
     let disposition = get_u32(body, 36);
     let options = get_u32(body, 40);
-    let name = from_utf16(region(body, get_u16(body, 44), get_u16(body, 46))?);
+    let name = codec::utf16::decode_lossy(region(body, get_u16(body, 44), get_u16(body, 46))?);
     Ok((name, disposition, options))
 }
 

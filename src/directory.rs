@@ -8,14 +8,12 @@
 use transport::error::{Result, protocol_error};
 
 use crate::message::FileId;
-use crate::wire::{
-    self, HEADER, from_utf16, get_u16, get_u32, push_u16, push_u32, utf16, wide_region,
-};
+use crate::wire::{self, HEADER, get_u16, get_u32, push_u16, push_u32, wide_region};
 
 /// A `QUERY_DIRECTORY` request over `id`, matching `pattern`.
 #[must_use]
 pub fn request(id: FileId, pattern: &str) -> Vec<u8> {
-    let name = utf16(pattern);
+    let name = codec::utf16::encode(pattern);
     let mut out = Vec::new();
     push_u16(&mut out, 33);
     out.push(37);
@@ -43,7 +41,7 @@ pub fn id(body: &[u8]) -> Result<FileId> {
 pub fn response(names: &[String]) -> Vec<u8> {
     let mut buffer = Vec::new();
     for (index, name) in names.iter().enumerate() {
-        let encoded = utf16(name);
+        let encoded = codec::utf16::encode(name);
         let entry_len = 8 + encoded.len();
         let next = if index + 1 == names.len() {
             0
@@ -81,7 +79,7 @@ pub fn names(body: &[u8]) -> Result<Vec<String>> {
             .checked_add(name_len)
             .filter(|end| *end <= buffer.len())
             .ok_or_else(|| protocol_error("a directory entry past the buffer"))?;
-        listed.push(from_utf16(&buffer[start..end]));
+        listed.push(codec::utf16::decode_lossy(&buffer[start..end]));
         if next == 0 {
             break;
         }

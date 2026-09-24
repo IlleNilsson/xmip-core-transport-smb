@@ -1,8 +1,14 @@
 //! Xmip's side of one connection to an SMB2 server: negotiate the 2.0.2
 //! dialect, set up a session with the `NTLMSSP` tokens, connect the tree,
-//! then create, write, read, close and list one file on the share. The
-//! `NTLMv2` response is the identity capability's (see `ntlm.rs`); a server
-//! that does not require signing takes the guest logon.
+//! then create, write, read, close and list one file on the share.
+//!
+//! The three `NTLMSSP` messages are `xmip-core-library-ntlm`'s, laid out as
+//! MS-NLMP lays them out. **The `NTLMv2` response is not computed here**: a
+//! real AUTHENTICATE carries an HMAC-MD5 over the server's challenge keyed
+//! by an MD4 of the password (MS-NLMP section 3.3.2), and that is one
+//! mechanism at one gate (ADR-0050). Until a node presents one, the
+//! AUTHENTICATE carries the names and no response, and a server that does
+//! not require signing takes it as a guest logon.
 
 use std::io::BufReader;
 use std::net::TcpStream;
@@ -12,14 +18,27 @@ use transport::error::{Result, TransportError, protocol_error};
 use transport::socket;
 use transport::wire::MAX_BODY;
 
+use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
+use ntlm::{Authenticate, Challenge, Negotiate};
+
 use crate::directory;
 use crate::message::{self, FileId};
-use crate::ntlm::{self, Identity};
 use crate::wire::{self, Message};
 
 /// The largest read or write in one message, well within the negotiated
 /// message ceiling.
 pub const CHUNK: usize = 1024 * 1024;
+
+/// What the client asks the server to agree to: names in UTF-16, NTLM.
+const FLAGS: u32 = NEGOTIATE_UNICODE | NEGOTIATE_NTLM;
+
+/// Who the client logs on as: the names its AUTHENTICATE carries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Identity {
+    pub domain: String,
+    pub user: String,
+    pub workstation: String,
+}
 
 pub struct Client {
     reader: BufReader<TcpStream>,
@@ -64,16 +83,23 @@ impl Client {
     }
 
     fn session_setup(&mut self, identity: &Identity) -> Result<()> {
-        let setup = message::session_setup(false, &ntlm::negotiate());
+        let setup = message::session_setup(false, &Negotiate::new(FLAGS).to_bytes());
         let request = Message::request(wire::SESSION_SETUP, self.take_id(), setup);
         let challenge = self.exchange(&request)?;
         if challenge.status != wire::STATUS_MORE_PROCESSING {
             return Err(status_error("the session setup", challenge.status));
         }
         self.session_id = challenge.session_id;
-        let nonce = ntlm::read_challenge(message::session_token(&challenge.body)?)?;
-        let _ = nonce;
-        let auth = message::session_setup(false, &ntlm::authenticate(identity));
+        let offered = Challenge::parse(message::session_token(&challenge.body)?)
+            .map_err(|error| protocol_error(error.message))?;
+        let authenticate = Authenticate {
+            domain: identity.domain.clone(),
+            user: identity.user.clone(),
+            workstation: identity.workstation.clone(),
+            flags: FLAGS & offered.flags,
+            ..Authenticate::default()
+        };
+        let auth = message::session_setup(false, &authenticate.to_bytes());
         let answer = self.call(wire::SESSION_SETUP, auth)?;
         if answer.status != wire::STATUS_SUCCESS {
             return Err(status_error("the logon", answer.status));
