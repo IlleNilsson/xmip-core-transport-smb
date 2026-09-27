@@ -8,6 +8,8 @@ identity gates read too; until 2026-09-24 this crate carried a counted-field
 simplification of its own. Names on the wire are UTF-16 through
 `xmip-core-library-codec`.
 
+A Send Location creates, writes and closes on a session set up once per server and share and kept (`transport::Pool`). Until 2026-09-27 every file negotiated, set up a session, connected the tree and logged off.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

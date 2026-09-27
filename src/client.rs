@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use net::MAX_BODY;
 use transport::error::{Result, TransportError, protocol_error};
+use transport::pool::{Pooled, alive};
 use transport::{ceiling, socket};
 
 use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
@@ -40,6 +41,8 @@ pub struct Identity {
     pub workstation: String,
 }
 
+/// One session on one tree, kept between files while the server keeps it
+/// open.
 pub struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
@@ -264,6 +267,15 @@ impl Client {
             return Err(protocol_error("an answer to another message"));
         }
         Ok(answer)
+    }
+}
+
+impl Pooled for Client {
+    /// While the server has not closed the connection. Every file a send
+    /// opens is closed before the session is kept, so none is held open
+    /// for the next.
+    fn usable(&mut self) -> bool {
+        alive(&self.writer)
     }
 }
 

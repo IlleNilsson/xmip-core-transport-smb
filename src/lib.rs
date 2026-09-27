@@ -48,7 +48,7 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Configured, Directions, NoNativeClaim, ResourceClaim, Transport};
+use transport::{Arrived, Configured, Directions, NoNativeClaim, Pool, ResourceClaim, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// The one file the loopback pair puts on the share.
@@ -61,6 +61,9 @@ pub struct SmbTransport {
     identity: Identity,
     delete_after_retrieve: bool,
     timeout: Option<Duration>,
+    /// The sessions a send writes on, set up once per server and share and
+    /// kept.
+    sessions: Pool<Client>,
 }
 
 impl SmbTransport {
@@ -78,6 +81,7 @@ impl SmbTransport {
             },
             delete_after_retrieve: true,
             timeout: None,
+            sessions: Pool::new(),
         }
     }
 
@@ -193,13 +197,19 @@ impl Transport for SmbTransport {
         Ok(arrived)
     }
 
+    /// Create, write and close the file on the session kept for the server
+    /// and share, set up on the first send to them.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (server, share, name) = self.resolve(target)?;
-        let mut client = self.connect_to(server, share)?;
-        let id = client.create(name)?;
-        client.write_all(id, bytes)?;
-        client.close(id)?;
-        client.logoff()
+        self.sessions.exchange(
+            &format!("{server}/{share}"),
+            || self.connect_to(server, share),
+            |client| {
+                let id = client.create(name)?;
+                client.write_all(id, bytes)?;
+                client.close(id)
+            },
+        )
     }
 
     fn claims(&self) -> Option<&dyn ResourceClaim> {
@@ -296,14 +306,10 @@ impl SmbTransport {
 
 impl Accepting for SmbTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
-        let mut session = self.accept_one(listener)?;
-        let arrived = session
+        // The client keeps its session for the next file.
+        self.accept_one(listener)?
             .next_store()?
-            .ok_or_else(|| protocol_error("the client logged off without writing"))?;
-        // Serve the logoff that follows, so the client's goodbye is
-        // answered rather than met by a closed socket.
-        while session.next_event()?.is_some() {}
-        Ok(arrived)
+            .ok_or_else(|| protocol_error("the client logged off without writing"))
     }
 }
 
@@ -416,6 +422,37 @@ mod tests {
         assert!(first[0].origin_uri.ends_with("/xmip/1.edi"));
         assert_eq!(first[1].bytes, [0xff, 0x00]);
         assert_eq!(again.len(), 2);
+    }
+
+    #[test]
+    fn a_thousand_files_set_up_once_and_a_session_the_server_closed_is_replaced() {
+        const SENDS: usize = 1000;
+        let far_end = SmbTransport::new("127.0.0.1:0", session::SHARE).timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = SmbTransport::new(address, session::SHARE).timing_out_after(secs(5));
+        let sending = near.clone();
+        let sender = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for n in 0..SENDS {
+                sending.send(&format!("{n}.edi"), n.to_string().as_bytes())?;
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond a file.
+            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
+            sending.send("last.edi", b"after the close")
+        });
+        // One negotiate, session setup and tree connect for every file.
+        let mut session = far_end.accept_one(&listener).expect("accepting");
+        for n in 0..SENDS {
+            let stored = session.next_store().expect("store").expect("one");
+            assert_eq!(stored.bytes, n.to_string().as_bytes());
+        }
+        drop(session);
+        let mut again = far_end.accept_one(&listener).expect("a new session");
+        let last = again.next_store().expect("store").expect("one");
+        assert_eq!(last.bytes, b"after the close");
+        sender.join().expect("thread").expect("sending");
+        assert_eq!(near.sessions.opened(), 2);
     }
 
     #[test]
