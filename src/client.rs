@@ -14,9 +14,9 @@ use std::io::BufReader;
 use std::net::TcpStream;
 use std::time::Duration;
 
+use net::MAX_BODY;
 use transport::error::{Result, TransportError, protocol_error};
-use transport::socket;
-use transport::wire::MAX_BODY;
+use transport::{ceiling, socket};
 
 use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
 use ntlm::{Authenticate, Challenge, Negotiate};
@@ -173,8 +173,10 @@ impl Client {
     /// Read `length` bytes of `id` from the start, a chunk per message.
     ///
     /// # Errors
-    /// Where the server refused.
+    /// Where the server refused, or `length` is over `net::MAX_BODY`.
     pub fn read_all(&mut self, id: FileId, length: u64) -> Result<Vec<u8>> {
+        let whole = usize::try_from(length).unwrap_or(usize::MAX);
+        ceiling::within(whole, MAX_BODY, "Xmip reads of one file")?;
         let mut bytes = Vec::new();
         while (bytes.len() as u64) < length {
             let want = (length - bytes.len() as u64).min(CHUNK as u64);
@@ -288,10 +290,6 @@ pub fn status_error(what: &str, status: u32) -> TransportError {
         TransportError::permanent(text)
     }
 }
-
-/// The largest whole Stream read off one file: what a receive will not
-/// exceed.
-pub const MAX_FILE: usize = MAX_BODY;
 
 #[cfg(test)]
 mod tests {

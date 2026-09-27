@@ -24,6 +24,9 @@ xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core
 ntlm = { package = "xmip-core-library-ntlm", git = "https://github.com/IlleNilsson/xmip-core-library-ntlm", branch = "main" }
 # The estate's encoding primitives: UTF-16, which SMB2 writes names in.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# The most a connection is read for: the ceiling one file is read whole
+# under (`net::MAX_BODY`).
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test

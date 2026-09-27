@@ -17,9 +17,9 @@ pub const SIGNATURE: [u8; 4] = [0xFE, b'S', b'M', b'B'];
 pub const HEADER: usize = 64;
 /// `SMB2_FLAGS_SERVER_TO_REDIR`: this message is a response.
 pub const FLAGS_RESPONSE: u32 = 0x0000_0001;
-/// The largest message either side reads, over the four-byte length's
-/// seventeen-bit ceiling but well within it.
-pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+/// The largest message the direct-TCP transport's three-byte length can
+/// say (MS-SMB2 section 2.1): the protocol's own ceiling.
+pub const MAX_MESSAGE: usize = 0x00FF_FFFF;
 
 /// `SMB2 NEGOTIATE`.
 pub const NEGOTIATE: u16 = 0x0000;
