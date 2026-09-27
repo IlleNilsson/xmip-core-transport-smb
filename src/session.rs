@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use transport::Arrived;
 use transport::error::{Result, protocol_error};
@@ -106,7 +106,7 @@ impl Session {
         let negotiate = self.expect(wire::SESSION_SETUP)?;
         let asked = Negotiate::parse(message::session_token(&negotiate.body)?)
             .map_err(|error| protocol_error(error.message))?;
-        let nonce = fresh_nonce(&self.peer);
+        let nonce = fresh_nonce();
         let offered = Challenge::new(asked.flags & (NEGOTIATE_UNICODE | NEGOTIATE_NTLM), nonce);
         let mut challenge = negotiate.respond(
             wire::STATUS_MORE_PROCESSING,
@@ -349,15 +349,9 @@ impl Session {
     }
 }
 
-/// Eight bytes no two sessions share: the clock, the peer and a counter.
-fn fresh_nonce(peer: &SocketAddr) -> [u8; 8] {
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
-        });
-    let seed = nanos ^ SESSIONS.load(Ordering::Relaxed).rotate_left(17) ^ u64::from(peer.port());
-    seed.to_le_bytes()
+/// Eight random bytes: the NTLM server challenge a logon answers.
+fn fresh_nonce() -> [u8; 8] {
+    codec::random::array()
 }
 
 #[cfg(test)]
@@ -366,10 +360,8 @@ mod tests {
 
     #[test]
     fn a_nonce_is_eight_bytes_and_fresh() {
-        let peer: SocketAddr = "127.0.0.1:445".parse().expect("address");
-        let first = fresh_nonce(&peer);
+        let first = fresh_nonce();
         assert_eq!(first.len(), 8);
-        SESSIONS.fetch_add(1, Ordering::Relaxed);
-        assert_ne!(first, fresh_nonce(&peer));
+        assert_ne!(first, fresh_nonce());
     }
 }
