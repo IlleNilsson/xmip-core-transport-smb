@@ -48,7 +48,8 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, NoNativeClaim, ResourceClaim, Transport};
+use transport::{Arrived, Configured, Directions, NoNativeClaim, ResourceClaim, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// The one file the loopback pair puts on the share.
 const LOOPBACK_FILE: &str = "probe.bin";
@@ -206,6 +207,84 @@ impl Transport for SmbTransport {
     }
 }
 
+impl Configured for SmbTransport {
+    /// The address is the server, `host:445`: where a Location connects.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "share",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The share a Receive Location lists and a Send Location writes into \
+                          when a target names none.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "domain",
+                kind: Kind::Text,
+                presence: Presence::Optional,
+                meaning: "The domain the session setup presents; `WORKGROUP` when left out.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "user",
+                kind: Kind::Text,
+                presence: Presence::Optional,
+                meaning: "The user the session setup presents; `xmip` when left out.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "workstation",
+                kind: Kind::Text,
+                presence: Presence::Optional,
+                meaning: "The workstation the session setup presents; `XMIP` when left out.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "leave_files",
+                kind: Kind::Boolean,
+                presence: Presence::Optional,
+                meaning: "Whether a Receive Location leaves the files it read in place; each is \
+                          removed once read when left out.",
+                applies: Applies::Receive,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a server that stops mid-answer is waited on; unbounded when \
+                          left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    /// A password, once the identity capability computes the `NTLMv2`
+    /// response, comes through the Location's credentials, not a setting.
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let mut transport = Self::new(address, settings.text("share"));
+        let mut identity = transport.identity.clone();
+        if let Some(domain) = settings.optional_text("domain") {
+            identity.domain = domain.to_string();
+        }
+        if let Some(user) = settings.optional_text("user") {
+            identity.user = user.to_string();
+        }
+        if let Some(workstation) = settings.optional_text("workstation") {
+            identity.workstation = workstation.to_string();
+        }
+        transport = transport.as_identity(identity);
+        if settings.optional_boolean("leave_files") == Some(true) {
+            transport = transport.leaving_files();
+        }
+        if let Some(timeout) = settings.optional_duration("timeout") {
+            transport = transport.timing_out_after(timeout);
+        }
+        Ok(transport)
+    }
+}
+
 impl SmbTransport {
     /// Both ends on this machine: an ephemeral local port, the share this
     /// crate's server serves, the loopback timeout on every read.
@@ -248,6 +327,28 @@ mod tests {
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
+    }
+
+    #[test]
+    fn smb_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(SmbTransport::SETTINGS.problems(), Vec::<String>::new());
+        let given = [
+            ("share".to_string(), Given::Text("inbox".to_string())),
+            ("domain".to_string(), Given::Text("PARTNER".to_string())),
+            ("leave_files".to_string(), Given::Boolean(true)),
+            ("timeout".to_string(), Given::Text("2s".to_string())),
+        ];
+        let built = SmbTransport::open("server:445", Applies::Receive, &given).expect("configured");
+        assert_eq!(built.share, "inbox");
+        assert_eq!(built.identity.domain, "PARTNER");
+        assert_eq!(built.identity.user, "xmip");
+        assert!(!built.delete_after_retrieve);
+        assert_eq!(built.timeout, Some(secs(2)));
+        let Err(refused) = SmbTransport::open("server:445", Applies::Send, &given) else {
+            panic!("a Send Location removes nothing");
+        };
+        assert!(refused.message.contains("\"leave_files\""), "{refused}");
     }
 
     #[test]
