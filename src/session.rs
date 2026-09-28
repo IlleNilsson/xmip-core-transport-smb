@@ -12,7 +12,6 @@
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use transport::Arrived;
@@ -67,8 +66,19 @@ pub struct Session {
     next_handle: u64,
 }
 
-/// Session ids handed out, one a connection.
-static SESSIONS: AtomicU64 = AtomicU64::new(1);
+/// A session id nobody can guess, one a connection, drawn from the
+/// operating system's random source: a predictable id lets another
+/// connection name a session it did not set up wherever signing is off.
+/// Never zero, which names no session, nor all ones, which a compounded
+/// request uses for the one before it (MS-SMB2 3.3.5.2.7.2).
+fn session_id() -> u64 {
+    loop {
+        let id = u64::from_le_bytes(codec::random::array());
+        if id != 0 && id != u64::MAX {
+            return id;
+        }
+    }
+}
 
 impl Session {
     /// Accept one client on `listener`: negotiate, set up the session and
@@ -84,7 +94,7 @@ impl Session {
             reader,
             writer,
             peer,
-            id: SESSIONS.fetch_add(1, Ordering::Relaxed),
+            id: session_id(),
             tree: String::new(),
             files: BTreeMap::new(),
             handles: BTreeMap::new(),
@@ -363,5 +373,17 @@ mod tests {
         let first = fresh_nonce();
         assert_eq!(first.len(), 8);
         assert_ne!(first, fresh_nonce());
+    }
+
+    #[test]
+    fn a_session_id_is_drawn_not_counted() {
+        let ids: std::collections::BTreeSet<u64> = (0..64).map(|_| session_id()).collect();
+        assert_eq!(ids.len(), 64, "no two alike");
+        assert!(ids.iter().all(|id| *id != 0 && *id != u64::MAX));
+        let steps = ids
+            .iter()
+            .zip(ids.iter().skip(1))
+            .filter(|(a, b)| **b == **a + 1);
+        assert_eq!(steps.count(), 0, "no id follows another");
     }
 }
