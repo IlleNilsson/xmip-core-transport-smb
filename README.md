@@ -8,7 +8,16 @@ identity gates read too; until 2026-09-24 this crate carried a counted-field
 simplification of its own. Names on the wire are UTF-16 through
 `xmip-core-library-codec`.
 
+The in-process server draws each session id from the operating system's
+random source (`codec::random`), never zero or all ones; until 2026-09-28 it
+counted them, and a counted id is one another connection can name where
+signing is off.
+
 A Send Location creates, writes and closes on a session set up once per server and share and kept (`transport::Pool`). Until 2026-09-27 every file negotiated, set up a session, connected the tree and logged off.
+
+A Receive Location lists, reads and removes on the same kept session. Until 2026-09-28 every receive set up a session and logged off.
+
+A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls: scheme, authority, path and decoded query. Until 2026-09-28 it was read through the transport capability's `socket::target`, which split it on its first slash and left the query in the path.
 
 ## Toolchain
 

@@ -43,6 +43,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::{Client, Identity};
+use net::Target;
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
@@ -61,8 +62,8 @@ pub struct SmbTransport {
     identity: Identity,
     delete_after_retrieve: bool,
     timeout: Option<Duration>,
-    /// The sessions a send writes on, set up once per server and share and
-    /// kept.
+    /// The sessions a send writes on and a receive reads on, set up once per
+    /// server and share and kept.
     sessions: Pool<Client>,
 }
 
@@ -149,7 +150,7 @@ impl SmbTransport {
     /// `smb://host:445/share/name` — or is a name alone on this
     /// transport's share.
     fn resolve<'a>(&'a self, target: &'a str) -> Result<(&'a str, &'a str, &'a str)> {
-        match socket::target("smb", target) {
+        match Target::under(&["smb"], target).map(|named| (named.authority(), named.path())) {
             Some((server, path)) => {
                 let (share, name) = path
                     .split_once('/')
@@ -178,23 +179,28 @@ impl Transport for SmbTransport {
     }
 
     /// Every file on the share, each removed once read unless the
-    /// transport was told to leave them.
+    /// transport was told to leave them, on the session kept for the server
+    /// and share: set up on the first receive.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let mut client = self.connect()?;
-        let mut arrived = Vec::new();
-        for name in client.list("*")? {
-            let (id, length) = client.open(&name)?;
-            let bytes = client.read_all(id, length)?;
-            client.close(id)?;
-            if self.delete_after_retrieve {
-                let handle = client.open_to_delete(&name)?;
-                client.close(handle)?;
-            }
-            let origin = format!("smb://{}/{}/{name}", self.server, self.share);
-            arrived.push(Arrived::new(origin, bytes));
-        }
-        client.logoff()?;
-        Ok(arrived)
+        self.sessions.exchange(
+            &format!("{}/{}", self.server, self.share),
+            || self.connect(),
+            |client| {
+                let mut arrived = Vec::new();
+                for name in client.list("*")? {
+                    let (id, length) = client.open(&name)?;
+                    let bytes = client.read_all(id, length)?;
+                    client.close(id)?;
+                    if self.delete_after_retrieve {
+                        let handle = client.open_to_delete(&name)?;
+                        client.close(handle)?;
+                    }
+                    let origin = format!("smb://{}/{}/{name}", self.server, self.share);
+                    arrived.push(Arrived::new(origin, bytes));
+                }
+                Ok(arrived)
+            },
+        )
     }
 
     /// Create, write and close the file on the session kept for the server
@@ -387,8 +393,10 @@ mod tests {
         let far_end = SmbTransport::new("127.0.0.1:0", session::SHARE).timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let receiver = std::thread::spawn(move || {
-            let near = SmbTransport::new(address.clone(), session::SHARE).timing_out_after(secs(2));
-            let first = near.receive()?;
+            // Two transports, so two sessions: each keeps its own.
+            let first = SmbTransport::new(address.clone(), session::SHARE)
+                .timing_out_after(secs(2))
+                .receive()?;
             let again = SmbTransport::new(address, session::SHARE)
                 .leaving_files()
                 .timing_out_after(secs(2))
@@ -453,6 +461,38 @@ mod tests {
         assert_eq!(last.bytes, b"after the close");
         sender.join().expect("thread").expect("sending");
         assert_eq!(near.sessions.opened(), 2);
+    }
+
+    #[test]
+    fn a_thousand_receives_set_up_once_and_a_session_the_server_closed_is_replaced() {
+        const RECEIVES: usize = 1000;
+        let far_end = SmbTransport::new("127.0.0.1:0", session::SHARE).timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = SmbTransport::new(address, session::SHARE).timing_out_after(secs(5));
+        let (go, going) = std::sync::mpsc::channel();
+        let receiver = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for _ in 0..RECEIVES {
+                assert!(near.receive()?.is_empty());
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond a receive.
+            assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
+            // A send on the same kept session says the receives are done.
+            near.send("received.edi", b"received")?;
+            going.recv().expect("go");
+            Ok::<_, transport::TransportError>((near.receive()?, near.sessions.opened()))
+        });
+        let mut session = far_end.accept_one(&listener).expect("accepting");
+        let marker = session.next_store().expect("served").expect("the marker");
+        assert_eq!(marker.bytes, b"received");
+        drop(session);
+        go.send(()).expect("went");
+        let mut again = far_end.accept_one(&listener).expect("accepting");
+        while again.next_event().expect("served").is_some() {}
+        let (arrived, opened) = receiver.join().expect("thread").expect("received");
+        assert!(arrived.is_empty());
+        assert_eq!(opened, 2);
     }
 
     #[test]

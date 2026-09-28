@@ -15,9 +15,10 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use net::MAX_BODY;
+use net::ceiling;
 use transport::error::{Result, TransportError, protocol_error};
 use transport::pool::{Pooled, alive};
-use transport::{ceiling, socket};
+use transport::socket;
 
 use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
 use ntlm::{Authenticate, Challenge, Negotiate};
@@ -148,7 +149,7 @@ impl Client {
     ///
     /// # Errors
     /// Where the server refused.
-    pub fn open_root(&mut self) -> Result<FileId> {
+    fn open_root(&mut self) -> Result<FileId> {
         let request = message::create_request("", message::FILE_OPEN, message::FILE_DIRECTORY);
         Ok(message::created(&self.call(wire::CREATE, request)?.body)?.0)
     }

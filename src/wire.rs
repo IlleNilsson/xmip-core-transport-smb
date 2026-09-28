@@ -16,7 +16,7 @@ pub const SIGNATURE: [u8; 4] = [0xFE, b'S', b'M', b'B'];
 /// The fixed size of the synchronous header.
 pub const HEADER: usize = 64;
 /// `SMB2_FLAGS_SERVER_TO_REDIR`: this message is a response.
-pub const FLAGS_RESPONSE: u32 = 0x0000_0001;
+const FLAGS_RESPONSE: u32 = 0x0000_0001;
 /// The largest message the direct-TCP transport's three-byte length can
 /// say (MS-SMB2 section 2.1): the protocol's own ceiling.
 pub const MAX_MESSAGE: usize = 0x00FF_FFFF;
@@ -147,12 +147,9 @@ impl Message {
     /// Where the connection broke, the message is not SMB2, or it is over
     /// [`MAX_MESSAGE`].
     pub fn read(reader: &mut impl Read) -> Result<Option<Self>> {
-        let mut length = [0u8; 4];
-        match reader.read_exact(&mut length) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(classify("reading a message length", &e)),
-        }
+        let Some(length) = net::read::header::<4>(reader, "a message length")? else {
+            return Ok(None);
+        };
         let length = (u32::from_be_bytes(length) & 0x00FF_FFFF) as usize;
         if !(HEADER..=MAX_MESSAGE).contains(&length) {
             return Err(protocol_error(format!("an SMB2 message of {length} bytes")));
@@ -200,7 +197,7 @@ pub fn push_u64(out: &mut Vec<u8>, value: u64) {
 }
 
 /// Write a little-endian u16 at `at`.
-pub fn put_u16(out: &mut [u8], at: usize, value: u16) {
+fn put_u16(out: &mut [u8], at: usize, value: u16) {
     out[at..at + 2].copy_from_slice(&value.to_le_bytes());
 }
 
@@ -210,7 +207,7 @@ pub fn put_u32(out: &mut [u8], at: usize, value: u32) {
 }
 
 /// Write a little-endian u64 at `at`.
-pub fn put_u64(out: &mut [u8], at: usize, value: u64) {
+fn put_u64(out: &mut [u8], at: usize, value: u64) {
     out[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }
 
