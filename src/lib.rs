@@ -4,7 +4,7 @@
 //! its name kept beside it.
 //!
 //! SMB is the file share every Windows network already has, and a folder
-//! on one is a drop box a partner writes into and an integrator reads out
+//! on one is a drop box a Party writes into and an integrator reads out
 //! of. What is spoken here is SMB2, dialect 2.0.2, over TCP on port 445
 //! (`wire.rs`): `NEGOTIATE`, `SESSION_SETUP` with the three `NTLMSSP`
 //! messages as `xmip-core-library-ntlm` lays them out, `TREE_CONNECT` to one
@@ -347,13 +347,13 @@ mod tests {
         assert_eq!(SmbTransport::SETTINGS.problems(), Vec::<String>::new());
         let given = [
             ("share".to_string(), Given::Text("inbox".to_string())),
-            ("domain".to_string(), Given::Text("PARTNER".to_string())),
+            ("domain".to_string(), Given::Text("PARTY".to_string())),
             ("leave_files".to_string(), Given::Boolean(true)),
             ("timeout".to_string(), Given::Text("2s".to_string())),
         ];
         let built = SmbTransport::open("server:445", Applies::Receive, &given).expect("configured");
         assert_eq!(built.share, "inbox");
-        assert_eq!(built.identity.domain, "PARTNER");
+        assert_eq!(built.identity.domain, "PARTY");
         assert_eq!(built.identity.user, "xmip");
         assert!(!built.delete_after_retrieve);
         assert_eq!(built.timeout, Some(secs(2)));
