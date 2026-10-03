@@ -14,8 +14,6 @@ use std::io::BufReader;
 use std::net::TcpStream;
 use std::time::Duration;
 
-use net::MAX_BODY;
-use net::ceiling;
 use transport::error::{Result, TransportError, protocol_error};
 use transport::pool::{Pooled, alive};
 use transport::socket;
@@ -174,29 +172,19 @@ impl Client {
         Ok(())
     }
 
-    /// Read `length` bytes of `id` from the start, a chunk per message.
+    /// The next chunk of `id` from `offset`, at most [`CHUNK`] in one
+    /// message; `None` at its end.
     ///
     /// # Errors
-    /// Where the server refused, or `length` is over `net::MAX_BODY`.
-    pub fn read_all(&mut self, id: FileId, length: u64) -> Result<Vec<u8>> {
-        let whole = usize::try_from(length).unwrap_or(usize::MAX);
-        ceiling::within(whole, MAX_BODY, "Xmip reads of one file")?;
-        let mut bytes = Vec::new();
-        while (bytes.len() as u64) < length {
-            let want = (length - bytes.len() as u64).min(CHUNK as u64);
-            let want = u32::try_from(want).unwrap_or(u32::MAX);
-            let request = message::read_request(id, bytes.len() as u64, want);
-            let answer = self.call(wire::READ, request)?;
-            if answer.status == wire::STATUS_END_OF_FILE {
-                break;
-            }
-            let data = message::read_data(&answer.body)?;
-            if data.is_empty() {
-                break;
-            }
-            bytes.extend_from_slice(&data);
+    /// Where the server refused.
+    pub fn read_at(&mut self, id: FileId, offset: u64) -> Result<Option<Vec<u8>>> {
+        let want = u32::try_from(CHUNK).unwrap_or(u32::MAX);
+        let answer = self.call(wire::READ, message::read_request(id, offset, want))?;
+        if answer.status == wire::STATUS_END_OF_FILE {
+            return Ok(None);
         }
-        Ok(bytes)
+        let data = message::read_data(&answer.body)?;
+        Ok((!data.is_empty()).then_some(data))
     }
 
     /// The names on the share, `.` and `..` left out.
