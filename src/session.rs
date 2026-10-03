@@ -14,9 +14,9 @@ use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use transport::Arrived;
 use transport::error::{Result, protocol_error};
 use transport::socket;
+use transport::taken::Taken;
 
 use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
 use ntlm::{Authenticate, Challenge, Negotiate};
@@ -38,7 +38,7 @@ pub enum Event {
     /// The client wrote this many bytes to this name.
     Written(String, usize),
     /// The client closed a file it had written; here is the Stream.
-    Committed(Arrived),
+    Committed(Taken),
     /// The client read this name.
     Read(String),
     /// The client closed a file opened to delete; it is gone.
@@ -178,7 +178,7 @@ impl Session {
     ///
     /// # Errors
     /// Where the connection broke, or nothing arrived before the timeout.
-    pub fn next_store(&mut self) -> Result<Option<Arrived>> {
+    pub fn next_store(&mut self) -> Result<Option<Taken>> {
         loop {
             match self.next_event()? {
                 Some(Event::Committed(arrived)) => return Ok(Some(arrived)),
@@ -322,7 +322,7 @@ impl Session {
         if open.written {
             let bytes = self.files.get(&open.name).cloned().unwrap_or_default();
             let origin = format!("smb://{}/{}/{}", self.peer, self.tree, open.name);
-            return Ok(Some(Event::Committed(Arrived::new(origin, bytes))));
+            return Ok(Some(Event::Committed(Taken::new(origin, bytes))));
         }
         Ok(None)
     }
