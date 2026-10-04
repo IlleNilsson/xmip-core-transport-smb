@@ -21,7 +21,7 @@ use transport::taken::Taken;
 use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
 use ntlm::{Authenticate, Challenge, Negotiate};
 
-use crate::directory;
+use crate::directory::{self, Stamp, Written};
 use crate::message::{self, FileId};
 use crate::wire::{self, Message};
 
@@ -62,6 +62,8 @@ pub struct Session {
     id: u64,
     tree: String,
     files: BTreeMap<String, Vec<u8>>,
+    /// When each file was last written, which a listing gives.
+    written: Written,
     handles: BTreeMap<[u8; 16], Open>,
     next_handle: u64,
 }
@@ -97,6 +99,7 @@ impl Session {
             id: session_id(),
             tree: String::new(),
             files: BTreeMap::new(),
+            written: Written::default(),
             handles: BTreeMap::new(),
             next_handle: 1,
         };
@@ -233,6 +236,7 @@ impl Session {
         }
         if disposition == message::FILE_OVERWRITE_IF {
             self.files.insert(name.clone(), Vec::new());
+            self.written.touch(&name);
         }
         let id = FileId::of(self.next_handle);
         self.next_handle += 1;
@@ -271,6 +275,7 @@ impl Session {
             bytes.resize(start + data.len(), 0);
         }
         bytes[start..start + data.len()].copy_from_slice(&data);
+        self.written.touch(&name);
         let count = u32::try_from(data.len()).unwrap_or(u32::MAX);
         self.answer(
             request,
@@ -317,6 +322,7 @@ impl Session {
         };
         if open.delete_on_close {
             self.files.remove(&open.name);
+            self.written.forget(&open.name);
             return Ok(Some(Event::Removed(open.name)));
         }
         if open.written {
@@ -329,11 +335,16 @@ impl Session {
 
     fn on_query(&mut self, request: &Message) -> Result<Option<Event>> {
         directory::id(&request.body)?;
-        let names: Vec<String> = self.files.keys().cloned().collect();
-        if names.is_empty() {
+        let listed: Vec<_> = (self.files.iter())
+            .map(|(name, bytes)| {
+                let (length, written) = (bytes.len() as u64, self.written.at(name));
+                (name.clone(), Stamp { length, written })
+            })
+            .collect();
+        if listed.is_empty() {
             self.answer(request, wire::STATUS_NO_MORE_FILES, Vec::new())?;
         } else {
-            let body = directory::response(&names);
+            let body = directory::response(&listed);
             self.answer(request, wire::STATUS_SUCCESS, body)?;
         }
         Ok(Some(Event::Listed))
