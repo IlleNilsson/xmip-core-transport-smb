@@ -5,7 +5,9 @@
 //! opens the file on its first read and reads it a `READ` at a time as the
 //! runtime asks, closing it at its end; its acknowledgement removes it on
 //! `Accepted` — opened with delete-on-close, and closed, as the receive did
-//! when it removed every file itself. SMB2 carries any number of open files
+//! when it removed every file itself. A refused file is left where it lies
+//! and remembered with its stamp, and a listing leaves it out while it lies
+//! so (`transport::Refused`). SMB2 carries any number of open files
 //! on one session, so the session is locked for one request and its answer,
 //! never across a file: a send on the same session goes between two reads.
 
@@ -14,9 +16,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use transport::body::chunked;
 use transport::error::Result;
 use transport::pool::Pooled;
-use transport::{Acknowledgement, Arrived, Verdict};
+use transport::{Acknowledgement, Arrived, Refused, Verdict};
 
 use crate::client::Client;
+use crate::directory::{Listed, Stamp};
 use crate::message::FileId;
 
 /// A set-up session on one share, kept by the pool and shared with the
@@ -42,21 +45,29 @@ impl Connection {
         act(&mut self.client())
     }
 
-    /// `name`, listed on this session, as an arrival from `origin`: read as
-    /// the runtime asks, removed on `Accepted` and on `Refused` where
-    /// `remove` says — a share has no place for a refused file — and left
-    /// on `Failed`.
+    /// `listed`, listed on this session, as an arrival from `origin`: read
+    /// as the runtime asks, removed on `Accepted` where `remove` says, left
+    /// on `Failed`, and left on `Refused` and remembered in `refused` with
+    /// its stamp — a refusal is not a consumption, and the file is the only
+    /// copy.
     #[must_use]
-    pub fn arrival(&self, origin: String, name: String, remove: bool) -> Arrived {
+    pub fn arrival(
+        &self,
+        origin: String,
+        (name, stamp): Listed,
+        remove: bool,
+        refused: &Refused<String, Stamp>,
+    ) -> Arrived {
         let connection = self.clone();
         let removing = name.clone();
-        let acknowledgement = Acknowledgement::deferred(move |verdict| match verdict {
-            Verdict::Accepted | Verdict::Refused(_) if remove => connection.with(|client| {
+        let told = Acknowledgement::deferred(move |verdict| match verdict {
+            Verdict::Accepted if remove => connection.with(|client| {
                 let handle = client.open_to_delete(&removing)?;
                 client.close(handle)
             }),
             Verdict::Accepted | Verdict::Refused(_) | Verdict::Failed => Ok(()),
         });
+        let acknowledgement = refused.remembering(name.clone(), stamp, told);
         let mut file = ShareFile {
             connection: self.clone(),
             name,

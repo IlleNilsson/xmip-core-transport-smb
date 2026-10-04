@@ -21,7 +21,7 @@ use transport::socket;
 use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
 use ntlm::{Authenticate, Challenge, Negotiate};
 
-use crate::directory;
+use crate::directory::{self, Listed};
 use crate::message::{self, FileId};
 use crate::wire::{self, Message};
 
@@ -187,11 +187,11 @@ impl Client {
         Ok((!data.is_empty()).then_some(data))
     }
 
-    /// The names on the share, `.` and `..` left out.
+    /// The files on the share, each with its stamp, `.` and `..` left out.
     ///
     /// # Errors
     /// Where the server refused.
-    pub fn list(&mut self, pattern: &str) -> Result<Vec<String>> {
+    pub fn list(&mut self, pattern: &str) -> Result<Vec<Listed>> {
         let root = self.open_root()?;
         let request = directory::request(root, pattern);
         let answer =
@@ -202,7 +202,7 @@ impl Client {
         }
         Ok(directory::names(&answer.body)?
             .into_iter()
-            .filter(|name| name != "." && name != "..")
+            .filter(|(name, _)| name != "." && name != "..")
             .collect())
     }
 

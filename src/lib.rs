@@ -12,7 +12,9 @@
 //! `CLOSE` and `QUERY_DIRECTORY` over one file (`message.rs`). A Receive
 //! Location lists the share and hands each file back unread, read a `READ`
 //! at a time as the runtime asks and removed only when its receive cycle
-//! accepted it ([`connection`]); a Send Location creates and writes. Either may instead
+//! accepted it ([`connection`]); a refused file is left where it lies and
+//! not received again while it is unchanged. A Send Location creates and
+//! writes. Either may instead
 //! accept clients directly through [`Session`], one client's worth of
 //! server over one share in memory.
 //!
@@ -46,6 +48,7 @@ use std::time::Duration;
 
 pub use client::{Client, Identity};
 pub use connection::Connection;
+pub use directory::Stamp;
 use net::Target;
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
@@ -53,7 +56,9 @@ use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::taken::Taken;
-use transport::{Arrived, Configured, Directions, NoNativeClaim, Pool, ResourceClaim, Transport};
+use transport::{
+    Arrived, Configured, Directions, NoNativeClaim, Pool, Refused, ResourceClaim, Transport,
+};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// The one file the loopback pair puts on the share.
@@ -69,6 +74,10 @@ pub struct SmbTransport {
     /// The sessions a send writes on and a receive reads on, set up once per
     /// server and share and kept, shared with what a receive handed back.
     sessions: Pool<Connection>,
+    /// The files this Location refused and left where they lie, each with
+    /// its stamp; the node process's, so a node started again receives
+    /// them once more. Cloned, the transport shares it.
+    refused: Refused<String, Stamp>,
 }
 
 impl SmbTransport {
@@ -87,6 +96,7 @@ impl SmbTransport {
             delete_after_retrieve: true,
             timeout: None,
             sessions: Pool::new(),
+            refused: Refused::default(),
         }
     }
 
@@ -189,20 +199,26 @@ impl Transport for SmbTransport {
     /// Every file on the share, listed on the session kept for the server
     /// and share — set up on the first receive — and handed back unread:
     /// each body opens the file on its first read and reads it a `READ` at
-    /// a time as the runtime asks; `Accepted` and `Refused` remove it
-    /// (opened with delete-on-close, and closed) unless the transport was
-    /// told to leave files, `Failed` leaves it for the next receive.
+    /// a time as the runtime asks; `Accepted` removes it (opened with
+    /// delete-on-close, and closed) unless the transport was told to leave
+    /// files, `Refused` leaves it and it is not listed again while its
+    /// `EndOfFile` and `LastWriteTime` stay as they were, `Failed` leaves it
+    /// for the next receive.
     fn receive(&self) -> Result<Vec<Arrived>> {
         self.sessions.exchange(
             &format!("{}/{}", self.server, self.share),
             || self.connect().map(Connection::new),
             |connection| {
-                let names = connection.with(|client| client.list("*"))?;
-                Ok(names
+                let listed = connection.with(|client| client.list("*"))?;
+                let listed = self
+                    .refused
+                    .sift(listed, |(name, _)| name, |(_, stamp)| Some(*stamp));
+                Ok(listed
                     .into_iter()
-                    .map(|name| {
-                        let origin = format!("smb://{}/{}/{name}", self.server, self.share);
-                        connection.arrival(origin, name, self.delete_after_retrieve)
+                    .map(|listed| {
+                        let origin = format!("smb://{}/{}/{}", self.server, self.share, listed.0);
+                        let remove = self.delete_after_retrieve;
+                        connection.arrival(origin, listed, remove, &self.refused)
                     })
                     .collect())
             },
@@ -488,14 +504,23 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_file_is_removed_and_not_listed_again() {
+    fn a_refused_file_stays_unlisted_while_unchanged_and_written_again_arrives_again() {
         let far_end = SmbTransport::new("127.0.0.1:0", session::SHARE).timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let receiver = std::thread::spawn(move || {
             let near = SmbTransport::new(address, session::SHARE).timing_out_after(secs(2));
             let first = transport::arrived::one_arrival(near.receive()?, "listed")?;
             first.refused(transport::Refusal::Forbidden)?;
-            Ok::<_, transport::TransportError>(near.receive()?.len())
+            let unchanged = near.receive()?.len();
+            near.send("1.bin", b"written again")?;
+            let again = transport::arrived::one_arrival(near.receive()?, "written again")?;
+            let (_, mut body, acknowledgement) = again.into_parts();
+            let mut read = Vec::new();
+            std::io::Read::read_to_end(&mut body, &mut read).expect("reading");
+            drop(body);
+            acknowledgement
+                .acknowledge(transport::Verdict::Refused(transport::Refusal::Forbidden))?;
+            Ok::<_, transport::TransportError>((unchanged, read, near.receive()?.len()))
         });
         let files = BTreeMap::from([("1.bin".to_string(), b"refused".to_vec())]);
         let mut session = far_end
@@ -506,12 +531,23 @@ mod tests {
         while let Some(event) = session.next_event().expect("event") {
             events.push(event);
         }
-        assert_eq!(receiver.join().expect("thread").expect("receiving"), 0);
+        let (unchanged, read, after) = receiver.join().expect("thread").expect("receiving");
+        assert_eq!(unchanged, 0, "the refused file lies there unchanged");
+        assert_eq!(read, b"written again", "written again, a new arrival");
+        assert_eq!(after, 0, "refused again, and unchanged since");
         assert!(
-            events.contains(&Event::Removed("1.bin".to_string())),
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::Removed(_))),
             "{events:?}"
         );
-        assert!(session.files().is_empty(), "removed once refused");
+        assert_eq!(
+            session
+                .files()
+                .get("1.bin")
+                .expect("the refused file lies there"),
+            b"written again"
+        );
     }
 
     #[test]
