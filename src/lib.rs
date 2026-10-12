@@ -197,6 +197,10 @@ impl Transport for SmbTransport {
         transport::Arrivals::Ordered("a receive lists again what is not yet told")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("a receive lists the share and returns")
+    }
+
     /// Every file on the share, listed on the session kept for the server
     /// and share — set up on the first receive — and handed back unread:
     /// each body opens the file on its first read and reads it a `READ` at
