@@ -189,7 +189,10 @@ mod tests {
         ];
         let response = response(&listing);
         assert_eq!(names(&response).expect("names"), listing);
-        assert!(names(&super::response(&[])).expect("empty").is_empty());
+        assert_eq!(
+            names(&super::response(&[])).expect("empty"),
+            [] as [(String, Stamp); 0]
+        );
         assert_eq!(status_name(wire::STATUS_BAD_NETWORK_NAME), "no such share");
     }
 
