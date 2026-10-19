@@ -13,7 +13,7 @@ random source (`codec::random`), never zero or all ones; until 2026-09-28 it
 counted them, and a counted id is one another connection can name where
 signing is off.
 
-A Send Location creates, writes and closes on a session set up once per server and share and kept (`transport::Pool`). Until 2026-09-27 every file negotiated, set up a session, connected the tree and logged off.
+A Send Location creates, writes and closes on a session set up once per server and share and kept (`transport::Pool`). Until 2026-09-27 every file negotiated, set up a session, connected the tree and logged off. A send writes the Message a `WRITE` at a time as it is read from the Ledger, never whole in memory (`Sending::Streamed`, 2026-10-19), and a receive hands over no more files of a listing than the runtime has room for.
 
 A Receive Location lists, reads and removes on the same kept session. Until 2026-09-28 every receive set up a session and logged off.
 

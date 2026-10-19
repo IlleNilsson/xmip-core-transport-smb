@@ -209,7 +209,7 @@ impl Transport for SmbTransport {
     /// files, `Refused` leaves it and it is not listed again while its
     /// `EndOfFile` and `LastWriteTime` stay as they were, `Failed` leaves it
     /// for the next receive.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         self.sessions.exchange(
             &format!("{}/{}", self.server, self.share),
             || self.connect().map(Connection::new),
@@ -220,6 +220,7 @@ impl Transport for SmbTransport {
                     .sift(listed, |(name, _)| name, |(_, stamp)| Some(*stamp));
                 Ok(listed
                     .into_iter()
+                    .take(most)
                     .map(|listed| {
                         let origin = format!("smb://{}/{}/{}", self.server, self.share, listed.0);
                         let remove = self.delete_after_retrieve;
@@ -230,9 +231,13 @@ impl Transport for SmbTransport {
         )
     }
 
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Streamed("each WRITE carries the next piece of the body as it is read")
+    }
+
     /// Create, write and close the file on the session kept for the server
     /// and share, set up on the first send to them.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
         let (server, share, name) = self.resolve(target)?;
         self.sessions.exchange(
             &format!("{server}/{share}"),
@@ -240,7 +245,7 @@ impl Transport for SmbTransport {
             |connection| {
                 connection.with(|client| {
                     let id = client.create(name)?;
-                    client.write_all(id, bytes)?;
+                    client.write_all(id, &outgoing)?;
                     client.close(id)
                 })
             },

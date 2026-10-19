@@ -152,13 +152,14 @@ impl Client {
         Ok(message::created(&self.call(wire::CREATE, request)?.body)?.0)
     }
 
-    /// Write `bytes` to `id` from the start, a chunk per message.
+    /// Write `outgoing`'s body to `id` from the start, a chunk per message as
+    /// it is read, never whole in memory; an empty body one empty write.
     ///
     /// # Errors
     /// Where the server refused or wrote short.
-    pub fn write_all(&mut self, id: FileId, bytes: &[u8]) -> Result<()> {
+    pub fn write_all(&mut self, id: FileId, outgoing: &transport::Outgoing<'_>) -> Result<()> {
         let mut offset = 0u64;
-        for chunk in split_chunks(bytes) {
+        outgoing.pieces(CHUNK, |chunk| {
             let request = message::write_request(id, offset, chunk);
             let written = message::written(&self.call(wire::WRITE, request)?.body) as usize;
             if written != chunk.len() {
@@ -168,7 +169,8 @@ impl Client {
                 )));
             }
             offset += written as u64;
-        }
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -270,13 +272,6 @@ impl Pooled for Client {
 
 /// The chunks a write is split into, one empty chunk where the whole is
 /// empty so a zero-length file is still written.
-fn split_chunks(bytes: &[u8]) -> Vec<&[u8]> {
-    if bytes.is_empty() {
-        return vec![&[]];
-    }
-    bytes.chunks(CHUNK).collect()
-}
-
 /// The failure a status names; retryable where it is the server briefly
 /// busy or a share not yet up.
 #[must_use]
@@ -302,7 +297,5 @@ mod tests {
         assert!(error.message.contains("no such file"), "{error}");
         assert!(!error.retryable);
         assert!(status_error("x", 0xC000_0203).retryable, "a network error");
-        assert_eq!(split_chunks(b"").len(), 1, "empty is one write");
-        assert_eq!(split_chunks(&vec![0u8; CHUNK + 1]).len(), 2);
     }
 }
