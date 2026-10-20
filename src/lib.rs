@@ -26,7 +26,7 @@
 //! is left off, so a server that requires it refuses, and this transport
 //! says so.
 //!
-//! SMB has artefacts and its byte-range and share-mode locks, but a whole
+//! SMB has artifacts and its byte-range and share-mode locks, but a whole
 //! file taken and removed needs none of them, so [`Transport::claims`]
 //! answers [`NoNativeClaim`], ADR-0024 clause 5: a producer writes to a
 //! temporary name and renames, or a Location waits for a listing to stop
@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(pair.round(&long).expect("chunks").bytes, long);
         assert_eq!(pair.name(), "smb");
         assert_eq!(pair.directions(), Directions::BOTH);
-        assert!(pair.claims().is_some(), "files are artefacts");
+        assert!(pair.claims().is_some(), "files are artifacts");
     }
 
     #[test]
