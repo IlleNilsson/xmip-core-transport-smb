@@ -165,7 +165,7 @@ impl SmbTransport {
     /// `smb://host:445/share/name` — or is a name alone on this
     /// transport's share.
     fn resolve<'a>(&'a self, target: &'a str) -> Result<(&'a str, &'a str, &'a str)> {
-        match Target::under(&["smb"], target).map(|named| (named.authority(), named.path())) {
+        match Target::under(Self::SCHEMES, target).map(|named| (named.authority(), named.path())) {
             Some((server, path)) => {
                 let (share, name) = path
                     .split_once('/')
@@ -309,6 +309,9 @@ impl Configured for SmbTransport {
             },
         ],
     };
+
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["smb"];
 
     /// A password, once the identity capability computes the `NTLMv2`
     /// response, comes through the Location's credentials, not a setting.
