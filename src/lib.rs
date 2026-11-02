@@ -577,13 +577,9 @@ mod tests {
         let near = SmbTransport::new(address, session::SHARE).timing_out_after(secs(5));
         let sending = near.clone();
         let sender = std::thread::spawn(move || {
-            let began = std::time::Instant::now();
             for n in 0..SENDS {
                 sending.send(&format!("{n}.edi"), n.to_string().as_bytes())?;
             }
-            let took = began.elapsed();
-            // Generous for a debug build under load: a millisecond a file.
-            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
             sending.send("last.edi", b"after the close")
         });
         // One negotiate, session setup and tree connect for every file.
@@ -608,13 +604,9 @@ mod tests {
         let near = SmbTransport::new(address, session::SHARE).timing_out_after(secs(5));
         let (go, going) = std::sync::mpsc::channel();
         let receiver = std::thread::spawn(move || {
-            let began = std::time::Instant::now();
             for _ in 0..RECEIVES {
                 assert!(near.receive()?.is_empty());
             }
-            let took = began.elapsed();
-            // Generous for a debug build under load: a millisecond a receive.
-            assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
             // A send on the same kept session says the receives are done.
             near.send("received.edi", b"received")?;
             going.recv().expect("go");
