@@ -4,9 +4,10 @@
 //! `EndOfFile` and `LastWriteTime`, the stamp that says a file is unchanged.
 
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use codec::filetime;
 use transport::error::{Result, protocol_error};
+use xcore::{Clock, SystemClock};
 
 use crate::message::FileId;
 use crate::wire::{
@@ -21,8 +22,6 @@ const ENTRY: usize = 64;
 const LAST_WRITE: usize = 24;
 const END_OF_FILE: usize = 40;
 const NAME_LENGTH: usize = 60;
-/// The 100-nanosecond intervals from 1601 to the Unix epoch.
-const FILETIME_AT_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
 
 /// What says a listed file is unchanged: its length and when it was last
 /// written, a `FILETIME`.
@@ -45,15 +44,11 @@ pub struct Written {
 }
 
 impl Written {
-    /// Note `name` written now.
+    /// Note `name` written now, a `FILETIME` (`codec::filetime`).
     pub fn touch(&mut self, name: &str) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_nanos() / 100).unwrap_or(u64::MAX)
-            });
-        self.newest = now
-            .saturating_add(FILETIME_AT_UNIX_EPOCH)
+        let now = filetime::from_unix_nanos(SystemClock.unix_timestamp_nanos().max(0));
+        self.newest = u64::try_from(now)
+            .unwrap_or(u64::MAX)
             .max(self.newest.saturating_add(1));
         self.at.insert(name.to_string(), self.newest);
     }
@@ -201,7 +196,7 @@ mod tests {
         let mut written = Written::default();
         written.touch("a.edi");
         let first = written.at("a.edi");
-        assert!(first > FILETIME_AT_UNIX_EPOCH, "written now");
+        assert!(i128::from(first) > filetime::AT_UNIX_EPOCH, "written now");
         written.touch("a.edi");
         assert!(written.at("a.edi") > first);
         written.forget("a.edi");
