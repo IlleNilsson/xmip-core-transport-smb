@@ -115,13 +115,6 @@ impl SmbTransport {
         self
     }
 
-    /// Give up on a server that stops mid-answer.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// The share path a tree connect names.
     fn share_path(server: &str, share: &str) -> String {
         let host = server.split(':').next().unwrap_or(server);
@@ -299,19 +292,21 @@ impl Configured for SmbTransport {
                           each is removed once its receive cycle accepted it when left out.",
                 applies: Applies::Receive,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a server that stops mid-answer is waited on; unbounded when \
-                          left out.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long a server that stops mid-answer is waited on; unbounded when \
+                 left out.",
+            ),
         ],
     };
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["smb"];
+
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
 
     /// A password, once the identity capability computes the `NTLMv2`
     /// response, comes through the Location's credentials, not a setting.
@@ -330,9 +325,6 @@ impl Configured for SmbTransport {
         transport = transport.as_identity(identity);
         if settings.optional_boolean("leave_files") == Some(true) {
             transport = transport.leaving_files();
-        }
-        if let Some(timeout) = settings.optional_duration("timeout") {
-            transport = transport.timing_out_after(timeout);
         }
         Ok(transport)
     }
