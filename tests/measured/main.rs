@@ -8,11 +8,20 @@
 //!
 //! - a thousand files on one session take a millisecond each at most;
 //! - a thousand receives on one session take a millisecond each at most.
+//!
+//! Each the millisecond beyond the round's wakes, round by round beside a
+//! plain wake, the fastest of five (`xcore::latency::Rounds`).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use transport::Transport;
+use xcore::latency::Rounds;
 use xmip_core_transport_smb::{SmbTransport, session};
+
+/// What a file or a receive wakes where a plain wake wakes one: the far end
+/// and this end at each of its three requests — `CREATE`, `WRITE` and
+/// `CLOSE`, or `CREATE`, `QUERY_DIRECTORY` and `CLOSE`.
+const WAKES: u32 = 6;
 
 fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
@@ -31,21 +40,20 @@ fn a_thousand_files_take_a_millisecond_each_at_most() {
     const SENDS: usize = 1000;
     let (far_end, listener, near) = ends();
     let sender = std::thread::spawn(move || {
-        let began = Instant::now();
+        let mut rounds = Rounds::crossing(WAKES);
         for n in 0..SENDS {
-            near.send(&format!("{n}.edi"), n.to_string().as_bytes())?;
+            let name = format!("{n}.edi");
+            rounds.round(|| near.send(&name, n.to_string().as_bytes()))?;
         }
-        let took = began.elapsed();
-        // Generous for a debug build under load: a millisecond a file.
-        assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
-        Ok::<_, transport::TransportError>(())
+        Ok::<_, transport::TransportError>(rounds)
     });
     let mut session = far_end.accept_one(&listener).expect("accepting");
     for n in 0..SENDS {
         let stored = session.next_store().expect("store").expect("one");
         assert_eq!(stored.bytes, n.to_string().as_bytes());
     }
-    sender.join().expect("thread").expect("sending");
+    let rounds = sender.join().expect("thread").expect("sending");
+    rounds.hold("a file");
 }
 
 #[test]
@@ -53,17 +61,15 @@ fn a_thousand_receives_take_a_millisecond_each_at_most() {
     const RECEIVES: usize = 1000;
     let (far_end, listener, near) = ends();
     let receiver = std::thread::spawn(move || {
-        let began = Instant::now();
+        let mut rounds = Rounds::crossing(WAKES);
         for _ in 0..RECEIVES {
-            assert!(near.receive()?.is_empty());
+            assert!(rounds.round(|| near.receive())?.is_empty());
         }
-        let took = began.elapsed();
-        // Generous for a debug build under load: a millisecond a receive.
-        assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
-        Ok::<_, transport::TransportError>(())
+        Ok::<_, transport::TransportError>(rounds)
     });
     // Served until the near end lets its session go.
     let mut session = far_end.accept_one(&listener).expect("accepting");
     while session.next_event().expect("served").is_some() {}
-    receiver.join().expect("thread").expect("received");
+    let rounds = receiver.join().expect("thread").expect("received");
+    rounds.hold("a receive");
 }
