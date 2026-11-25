@@ -3,9 +3,11 @@
 //!
 //! Not an SMB server. One session answers one client over one share kept
 //! in memory: it negotiates the 2.0.2 dialect, sets up a session with the
-//! `NTLMSSP` challenge and takes the logon as a guest (the `NTLMv2` check is
-//! the identity capability's), connects the one tree, and serves create,
-//! write, read, close and query-directory over the files in memory. A
+//! `NTLMSSP` challenge and admits the logon — only the login it is given,
+//! where it is given one ([`crate::logon::admits`]), answering any other
+//! `STATUS_LOGON_FAILURE`, and as a guest otherwise — connects the one
+//! tree, and serves create, write, read, close and query-directory over the
+//! files in memory. A
 //! file the client wrote is handed up as a Stream when it is closed; a
 //! file opened to delete is removed then. One tree, one file at a time.
 
@@ -14,6 +16,7 @@ use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
+use transport::Login;
 use transport::error::{Result, protocol_error};
 use transport::socket;
 use transport::taken::Taken;
@@ -83,13 +86,17 @@ fn session_id() -> u64 {
 }
 
 impl Session {
-    /// Accept one client on `listener`: negotiate, set up the session and
-    /// connect the tree.
+    /// Accept one client on `listener`: negotiate, set up the session,
+    /// admitting only `admitted` where it is given, and connect the tree.
     ///
     /// # Errors
-    /// Where the connection could not be accepted, or the client did not
-    /// open with the SMB2 handshake.
-    pub fn accept(listener: &TcpListener, timeout: Option<Duration>) -> Result<Self> {
+    /// Where the connection could not be accepted, the client did not open
+    /// with the SMB2 handshake, or its logon was refused.
+    pub fn accept(
+        listener: &TcpListener,
+        admitted: Option<&Login>,
+        timeout: Option<Duration>,
+    ) -> Result<Self> {
         let (stream, peer) = socket::accept_tcp(listener, timeout)?;
         let (reader, writer) = socket::split(stream)?;
         let mut session = Self {
@@ -104,7 +111,7 @@ impl Session {
             next_handle: 1,
         };
         session.negotiate()?;
-        session.session_setup()?;
+        session.session_setup(admitted)?;
         session.tree_connect()?;
         Ok(session)
     }
@@ -115,7 +122,7 @@ impl Session {
         answer.write(&mut self.writer)
     }
 
-    fn session_setup(&mut self) -> Result<()> {
+    fn session_setup(&mut self, admitted: Option<&Login>) -> Result<()> {
         let negotiate = self.expect(wire::SESSION_SETUP)?;
         let asked = Negotiate::parse(message::session_token(&negotiate.body)?)
             .map_err(|error| protocol_error(error.message))?;
@@ -128,10 +135,14 @@ impl Session {
         challenge.session_id = self.id;
         challenge.write(&mut self.writer)?;
         let authenticate = self.expect(wire::SESSION_SETUP)?;
-        // The NTLMv2 response the identity capability would check is not
-        // computed here; the identity is taken and the logon is a guest.
-        Authenticate::parse(message::session_token(&authenticate.body)?)
+        let read = Authenticate::parse(message::session_token(&authenticate.body)?)
             .map_err(|error| protocol_error(error.message))?;
+        if admitted.is_some_and(|login| !crate::logon::admits(login, &nonce, &read)) {
+            let refused = authenticate.respond(wire::STATUS_LOGON_FAILURE, Vec::new());
+            refused.write(&mut self.writer)?;
+            let failed = wire::STATUS_LOGON_FAILURE;
+            return Err(crate::client::status_error("the client's logon", failed));
+        }
         let answer = authenticate.respond(wire::STATUS_SUCCESS, message::session_setup(true, &[]));
         answer.write(&mut self.writer)
     }

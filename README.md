@@ -8,6 +8,20 @@ identity gates read too; until 2026-09-24 this crate carried a counted-field
 simplification of its own. Names on the wire are UTF-16 through
 `xmip-core-library-codec`.
 
+A Location that names a secret logs on with its password (`logon`): the
+AUTHENTICATE carries the `NTLMv2` response to the server's challenge,
+computed through `ntlm::response` — the one computation the `ntlm` gate
+verifies with too — over a blob made at the node's Clock, the secret read
+as each session is set up, never per file on a kept one (ADR-0019,
+amendment 2026-11-25). A Location that names none logs on with the names
+alone, as a guest. Until 2026-11-25 every logon was a guest's, and a
+Location naming a secret was refused as the node started. Messages are
+still not signed, so a server that requires signing — Windows 11 24H2 and
+Windows Server 2025 by default — refuses the session. The in-process
+server, given a login (`SmbTransport::admitting`), admits only an
+AUTHENTICATE for that user whose proof its password makes, answering any
+other `STATUS_LOGON_FAILURE`; given none, it admits any logon as a guest.
+
 The in-process server draws each session id from the operating system's
 random source (`codec::random`), never zero or all ones; until 2026-09-28 it
 counted them, and a counted id is one another connection can name where

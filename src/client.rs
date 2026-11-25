@@ -3,12 +3,9 @@
 //! then create, write, read, close and list one file on the share.
 //!
 //! The three `NTLMSSP` messages are `xmip-core-library-ntlm`'s, laid out as
-//! MS-NLMP lays them out. **The `NTLMv2` response is not computed here**: a
-//! real AUTHENTICATE carries an HMAC-MD5 over the server's challenge keyed
-//! by an MD4 of the password (MS-NLMP section 3.3.2), and that is one
-//! mechanism at one gate (ADR-0050). Until a node presents one, the
-//! AUTHENTICATE carries the names and no response, and a server that does
-//! not require signing takes it as a guest logon.
+//! MS-NLMP lays them out, and the AUTHENTICATE is the [`Logon`]'s: the
+//! `NTLMv2` response its password makes, or the names alone for a guest.
+//! Messages are not signed, so a server that requires signing refuses.
 
 use std::io::BufReader;
 use std::net::TcpStream;
@@ -19,9 +16,10 @@ use transport::pool::{Pooled, alive};
 use transport::socket;
 
 use ntlm::flags::{NEGOTIATE_NTLM, NEGOTIATE_UNICODE};
-use ntlm::{Authenticate, Challenge, Negotiate};
+use ntlm::{Challenge, Negotiate};
 
 use crate::directory::{self, Listed};
+use crate::logon::Logon;
 use crate::message::{self, FileId};
 use crate::wire::{self, Message};
 
@@ -51,7 +49,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect to `server`, set up a session as `identity`, and connect
+    /// Connect to `server`, set up a session presenting `logon`, and connect
     /// the tree at `share` — `\\server\share`.
     ///
     /// # Errors
@@ -60,7 +58,7 @@ impl Client {
     pub fn connect(
         server: &str,
         share: &str,
-        identity: &Identity,
+        logon: &Logon,
         timeout: Option<Duration>,
     ) -> Result<Self> {
         let stream = socket::connect_tcp(server, timeout)?;
@@ -73,7 +71,7 @@ impl Client {
             next_message_id: 0,
         };
         client.negotiate()?;
-        client.session_setup(identity)?;
+        client.session_setup(logon)?;
         client.tree_connect(share)?;
         Ok(client)
     }
@@ -84,7 +82,7 @@ impl Client {
         Ok(())
     }
 
-    fn session_setup(&mut self, identity: &Identity) -> Result<()> {
+    fn session_setup(&mut self, logon: &Logon) -> Result<()> {
         let setup = message::session_setup(false, &Negotiate::new(FLAGS).to_bytes());
         let request = Message::request(wire::SESSION_SETUP, self.take_id(), setup);
         let challenge = self.exchange(&request)?;
@@ -94,13 +92,7 @@ impl Client {
         self.session_id = challenge.session_id;
         let offered = Challenge::parse(message::session_token(&challenge.body)?)
             .map_err(|error| protocol_error(error.message))?;
-        let authenticate = Authenticate {
-            domain: identity.domain.clone(),
-            user: identity.user.clone(),
-            workstation: identity.workstation.clone(),
-            flags: FLAGS & offered.flags,
-            ..Authenticate::default()
-        };
+        let authenticate = logon.authenticate(&offered, FLAGS & offered.flags);
         let auth = message::session_setup(false, &authenticate.to_bytes());
         let answer = self.call(wire::SESSION_SETUP, auth)?;
         if answer.status != wire::STATUS_SUCCESS {

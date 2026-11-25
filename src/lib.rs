@@ -18,13 +18,11 @@
 //! accept clients directly through [`Session`], one client's worth of
 //! server over one share in memory.
 //!
-//! The `NTLMv2` response a real `SESSION_SETUP` carries is not computed here:
-//! it is an `HMAC-MD5` over an MD4 of the password, one mechanism at one
-//! gate that belongs to the identity capability (ADR-0044, ADR-0050).
-//! Until a node presents one the logon is taken as a guest,
-//! the way TLS is `xmip-core-library-tls`'s (ADR-0033); message signing
-//! is left off, so a server that requires it refuses, and this transport
-//! says so.
+//! A Location that names a secret logs on with its password, the `NTLMv2`
+//! response computed from it as the estate computes it once
+//! (`ntlm::response`) and read as each session is set up ([`logon`]); one
+//! that names none logs on as a guest. Message signing is left off, so a
+//! server that requires it refuses, and this transport says so.
 //!
 //! SMB has artifacts and its byte-range and share-mode locks, but a whole
 //! file taken and removed needs none of them, so [`Transport::claims`]
@@ -39,11 +37,13 @@
 pub mod client;
 pub mod connection;
 pub mod directory;
+pub mod logon;
 pub mod message;
 pub mod session;
 pub mod wire;
 
 use std::net::TcpListener;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use client::{Client, Identity};
@@ -70,6 +70,12 @@ pub struct SmbTransport {
     server: String,
     share: String,
     identity: Identity,
+    /// The secret its Location names, whose password the logon presents.
+    secret: Option<transport::Secured>,
+    /// The one login a far end admits, where it is given one.
+    admitted: Option<transport::Login>,
+    /// The node's Clock, which the response's blob is made at.
+    clock: Arc<dyn xcore::Clock>,
     delete_after_retrieve: bool,
     timeout: Option<Duration>,
     /// The sessions a send writes on and a receive reads on, set up once per
@@ -94,6 +100,9 @@ impl SmbTransport {
                 user: "xmip".to_string(),
                 workstation: "XMIP".to_string(),
             },
+            secret: None,
+            admitted: None,
+            clock: Arc::new(xcore::SystemClock),
             delete_after_retrieve: true,
             timeout: None,
             sessions: Pool::new(),
@@ -105,6 +114,13 @@ impl SmbTransport {
     #[must_use]
     pub fn as_identity(mut self, identity: Identity) -> Self {
         self.identity = identity;
+        self
+    }
+
+    /// As a far end, admit `login` alone, refusing any other logon.
+    #[must_use]
+    pub fn admitting(mut self, login: transport::Login) -> Self {
+        self.admitted = Some(login);
         self
     }
 
@@ -129,13 +145,13 @@ impl SmbTransport {
         self.connect_to(&self.server, &self.share)
     }
 
+    /// Connect to `share` on `server`, the Location's secret read now where
+    /// it names one: each new session reads it, a kept one never again.
     fn connect_to(&self, server: &str, share: &str) -> Result<Client> {
-        Client::connect(
-            server,
-            &Self::share_path(server, share),
-            &self.identity,
-            self.timeout,
-        )
+        let now = u64::try_from(self.clock.unix_seconds()).unwrap_or_default();
+        let logon = logon::Logon::presented(self.identity.clone(), self.secret.as_ref(), now)?;
+        let path = Self::share_path(server, share);
+        Client::connect(server, &path, &logon, self.timeout)
     }
 
     /// Bind as the far end clients connect to, and report the address.
@@ -146,12 +162,13 @@ impl SmbTransport {
         socket::bind_tcp(&self.server)
     }
 
-    /// Accept one client on an already-bound listener.
+    /// Accept one client on an already-bound listener, admitting only the
+    /// login [`Self::admitting`] gave, where it gave one.
     ///
     /// # Errors
-    /// Where the connection could not be accepted.
+    /// Where the connection could not be accepted, or the logon was refused.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Session> {
-        Session::accept(listener, self.timeout)
+        Session::accept(listener, self.admitted.as_ref(), self.timeout)
     }
 
     /// Where a target names the server, share and file itself —
@@ -274,7 +291,8 @@ impl Configured for SmbTransport {
                 name: "user",
                 kind: Kind::Text,
                 presence: Presence::Optional,
-                meaning: "The user the session setup presents; `xmip` when left out.",
+                meaning: "The user the session setup presents, its password the Location's \
+                          secret; `xmip` when left out.",
                 applies: Applies::Both,
             },
             Setting {
@@ -308,8 +326,7 @@ impl Configured for SmbTransport {
         Some(&mut self.timeout)
     }
 
-    /// A password, once the identity capability computes the `NTLMv2`
-    /// response, comes through the Location's credentials, not a setting.
+    /// The password is the secret the Location names, never a setting.
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address, settings.text("share"));
         let mut identity = transport.identity.clone();
@@ -327,6 +344,18 @@ impl Configured for SmbTransport {
             transport = transport.leaving_files();
         }
         Ok(transport)
+    }
+
+    /// The password the Location's secret holds, read at each session setup.
+    fn secured_by(mut self, secret: transport::Secured) -> Result<Self> {
+        self.secret = Some(secret);
+        Ok(self)
+    }
+
+    /// The node's Clock, which a response's blob is made at.
+    fn timed_by(mut self, clock: &Arc<dyn xcore::Clock>) -> Self {
+        self.clock = Arc::clone(clock);
+        self
     }
 }
 
@@ -614,6 +643,61 @@ mod tests {
         let (arrived, opened) = receiver.join().expect("thread").expect("received");
         assert!(arrived.is_empty());
         assert_eq!(opened, 2);
+    }
+
+    #[test]
+    fn the_password_is_the_locations_secret_read_at_each_session_setup() {
+        use transport::secured::Kept;
+        use xcore::SecretKind::Password;
+        use xcore::settings::Given;
+        let kept = Arc::new(Kept::default());
+        let drawn = Kept::drawn();
+        let far_end = SmbTransport::new("127.0.0.1:0", session::SHARE)
+            .admitting(transport::Login::new("orders", &drawn))
+            .timing_out_after(secs(2));
+        let (listener, address) = far_end.bind().expect("binding");
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let given = [
+            text("share", session::SHARE),
+            text("user", "orders"),
+            text("timeout", "2s"),
+        ];
+        let near = SmbTransport::open(&format!("smb://{address}"), Applies::Send, &given)
+            .expect("built")
+            .secured_by(kept.secured("partner-x.smb"))
+            .expect("kept");
+        let unset = near.send("1.edi", b"x").expect_err("not set");
+        assert!(unset.retryable, "asked again at the next session setup");
+        assert!(unset.message.contains("is not set"), "{unset}");
+
+        kept.set("partner-x.smb", Password, &format!("{drawn}-wrong"));
+        let sending = near.clone();
+        let sender = std::thread::spawn(move || sending.send("1.edi", b"x").err());
+        let refused = far_end.accept_one(&listener).err().expect("refused");
+        assert!(refused.message.contains("the logon failed"), "{refused}");
+        let wrong = sender.join().expect("thread").expect("refused");
+        assert!(
+            wrong.message.contains("the logon failed (0xc000006d)"),
+            "{wrong}"
+        );
+        assert!(!wrong.retryable, "{wrong}");
+
+        kept.set("partner-x.smb", Password, &drawn);
+        let sending = near.clone();
+        let sender = std::thread::spawn(move || sending.send("1.edi", b"right"));
+        let mut session = far_end.accept_one(&listener).expect("admitted");
+        let stored = session.next_store().expect("stored").expect("one");
+        assert_eq!(stored.bytes, b"right");
+        sender.join().expect("thread").expect("sent");
+
+        let guest = SmbTransport::new(address, session::SHARE).timing_out_after(secs(2));
+        let sender = std::thread::spawn(move || guest.send("1.edi", b"x").err());
+        let refused = far_end
+            .accept_one(&listener)
+            .err()
+            .expect("a guest refused");
+        assert!(refused.message.contains("the logon failed"), "{refused}");
+        sender.join().expect("thread").expect("refused");
     }
 
     #[test]
