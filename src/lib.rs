@@ -33,38 +33,62 @@
 //! The origin URI carries what the server knew: `smb://server/share/name`.
 //! A send target is `smb://host:445/share/name`, or a name alone on the
 //! configured server and share.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "default")]
 pub mod connection;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod directory;
+#[cfg(feature = "default")]
 pub mod logon;
+#[cfg(feature = "default")]
 pub mod message;
+#[cfg(feature = "default")]
 pub mod session;
+#[cfg(feature = "default")]
 pub mod wire;
 
-use std::net::TcpListener;
-use std::sync::Arc;
-use std::time::Duration;
+#[cfg(feature = "default")]
+use std::{net::TcpListener, sync::Arc, time::Duration};
 
+#[cfg(feature = "default")]
 pub use client::{Client, Identity};
+#[cfg(feature = "default")]
 pub use connection::Connection;
+#[cfg(feature = "default")]
 pub use directory::Stamp;
+#[cfg(feature = "default")]
 use net::Target;
+#[cfg(feature = "default")]
 pub use session::{Event, Session};
-use transport::ArrivalIdentity;
+#[cfg(feature = "default")]
 use transport::error::{Result, protocol_error};
+#[cfg(feature = "default")]
 use transport::listening::{Accepting, Listening};
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
-use transport::socket;
-use transport::taken::Taken;
+#[cfg(feature = "default")]
+use transport::{ArrivalIdentity, socket, taken::Taken};
+#[cfg(feature = "default")]
 use transport::{
     Arrived, Configured, Directions, NoNativeClaim, Pool, Refused, ResourceClaim, Transport,
 };
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// The one file the loopback pair puts on the share.
+#[cfg(feature = "default")]
 const LOOPBACK_FILE: &str = "probe.bin";
 
+#[cfg(feature = "default")]
 #[derive(Clone)]
 pub struct SmbTransport {
     server: String,
@@ -87,6 +111,7 @@ pub struct SmbTransport {
     refused: Refused<String, Stamp>,
 }
 
+#[cfg(feature = "default")]
 impl SmbTransport {
     /// Speak to the server at `server` — `host:445` — about `share`, as a
     /// guest until [`Self::as_identity`].
@@ -194,6 +219,7 @@ impl SmbTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for SmbTransport {
     fn name(&self) -> &'static str {
         "smb"
@@ -267,60 +293,10 @@ impl Transport for SmbTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for SmbTransport {
-    /// The address is the server, `host:445`: where a Location connects.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "share",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The share a Receive Location lists and a Send Location writes into \
-                          when a target names none.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "domain",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "The domain the session setup presents; `WORKGROUP` when left out.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "user",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "The user the session setup presents, its password the Location's \
-                          secret; `xmip` when left out.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "workstation",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "The workstation the session setup presents; `XMIP` when left out.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "leave_files",
-                kind: Kind::Boolean,
-                presence: Presence::Optional,
-                meaning: "Whether a Receive Location leaves the files it accepted in place; \
-                          each is removed once its receive cycle accepted it when left out.",
-                applies: Applies::Receive,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long a server that stops mid-answer is waited on; unbounded when \
-                 left out.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["smb"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
         Some(&mut self.timeout)
@@ -359,6 +335,7 @@ impl Configured for SmbTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl SmbTransport {
     /// Both ends on this machine: an ephemeral local port, the share this
     /// crate's server serves, the loopback timeout on every read.
@@ -368,6 +345,7 @@ impl SmbTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Accepting for SmbTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         // The client keeps its session for the next file.
@@ -377,6 +355,7 @@ impl Accepting for SmbTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Loopback for SmbTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::Unnamed(
@@ -400,6 +379,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use transport::payload::edge_payloads;
+    use xcore::settings::Applies;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
